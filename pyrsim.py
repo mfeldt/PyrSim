@@ -20,6 +20,9 @@ from typing import Iterable, Sequence
 import numpy as np
 
 
+DEFAULT_PUPIL_RADIUS = 0.4
+
+
 def _coordinate_grid(size: int) -> tuple[np.ndarray, np.ndarray]:
     """Return normalized x/y coordinate grids in the range [-1, 1]."""
     axis = np.linspace(-1.0, 1.0, size, endpoint=True)
@@ -76,7 +79,7 @@ def zernike_mode(index: int, rho: np.ndarray, theta: np.ndarray) -> np.ndarray:
 def generate_phase_screen_zernike(
     size: int,
     coefficients: Sequence[float] | dict[int, float],
-    pupil_radius: float = 0.4,
+    pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> np.ndarray:
     """Generate a phase screen from Zernike coefficients (in radians).
 
@@ -89,8 +92,8 @@ def generate_phase_screen_zernike(
         or a dictionary mapping 1-based Noll indices to amplitudes.
     pupil_radius:
         Radius of the simulated pupil in normalized grid coordinates. The
-        default of 0.4 leaves enough margin in the array to separate the four
-        pupils formed by the pyramid sensor.
+        default leaves enough margin in the array to separate the four pupils
+        formed by the pyramid sensor.
     """
     if not (0.0 < pupil_radius <= 1.0):
         raise ValueError("pupil_radius must be in the interval (0, 1]")
@@ -119,13 +122,13 @@ def generate_telescope_aperture(
     secondary_obstruction_ratio: float = 0.0,
     spider_width_ratio: float = 0.0,
     spider_angles_deg: Iterable[float] = (0.0, 90.0),
-    pupil_radius: float = 0.4,
+    pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> np.ndarray:
     """Generate a binary aperture with optional central obscuration and spiders.
 
     Ratios are relative to the telescope pupil diameter. The pupil radius is
     expressed in normalized grid coordinates, where 1.0 would touch the array
-    edges and the default 0.4 keeps the pupil compact enough to form four
+    edges and the default keeps the pupil compact enough to form four
     separated pupils after the pyramid sensor.
     """
     if not (0.0 <= secondary_obstruction_ratio < 1.0):
@@ -209,7 +212,7 @@ def forward_simulate(
     spider_angles_deg: Iterable[float] = (0.0, 90.0),
     pyramid_slope: float = 8.0 * np.pi,
     detector: Detector | None = None,
-    pupil_radius: float = 0.4,
+    pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> dict[str, np.ndarray]:
     """Run a full forward simulation from phase screen to detector image."""
     phase = generate_phase_screen_zernike(
