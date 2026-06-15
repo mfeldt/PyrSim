@@ -20,7 +20,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 
-DEFAULT_PUPIL_RADIUS = 0.4
+DEFAULT_PUPIL_RADIUS = 0.25
 
 
 def _coordinate_grid(size: int) -> tuple[np.ndarray, np.ndarray]:
