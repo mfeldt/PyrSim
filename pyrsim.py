@@ -267,3 +267,125 @@ def forward_simulate(
         "sensor_intensity": sensor_intensity,
         "detector_image": detector_image,
     }
+
+
+class TelescopeSimulator:
+    """Simulator of a telescope with a pyramid wavefront sensor viewing a sky map.
+
+    This class supports loading a 2D map of the night sky (with an associated
+    angular field of view in arcseconds) and computing the resulting detector
+    image for any telescope pointing coordinates (X, Y).
+    """
+
+    def __init__(
+        self,
+        size: int = 512,
+        pupil_radius: float | None = None,
+        pyramid_slope: float = (32.0 / 3.0) * np.pi,
+        detector_shape: tuple[int, int] = (256, 320),
+        detector_fov_arcsec: float = 2.2,
+        secondary_obstruction_ratio: float = 0.0,
+        spider_width_ratio: float = 0.0,
+        spider_angles_deg: Iterable[float] = (0.0, 90.0),
+    ) -> None:
+        self.size = size
+        # Default pupil_radius is calibrated for the 96px pupil diameter
+        self.pupil_radius = pupil_radius if pupil_radius is not None else 96.0 / size
+        self.pyramid_slope = pyramid_slope
+        self.detector_shape = detector_shape
+        self.detector_fov_arcsec = detector_fov_arcsec
+        self.secondary_obstruction_ratio = secondary_obstruction_ratio
+        self.spider_width_ratio = spider_width_ratio
+        self.spider_angles_deg = spider_angles_deg
+
+        # State variable: list of point sources as (x_arcsec, y_arcsec, brightness)
+        self.sources: list[tuple[float, float, float]] = []
+
+    def set_sky_map(self, sky_map: np.ndarray, sky_fov_arcsec: float, brightness_threshold: float = 1e-4) -> None:
+        """Convert a 2D sky map image to a list of continuous point sources."""
+        self.sources = []
+        sky_map = np.array(sky_map, dtype=float)
+        sh, sw = sky_map.shape
+        x_axis = np.linspace(-sky_fov_arcsec / 2, sky_fov_arcsec / 2, sw)
+        y_axis = np.linspace(-sky_fov_arcsec / 2, sky_fov_arcsec / 2, sh)
+
+        # Convert non-zero image pixels to continuous coordinates
+        y_indices, x_indices = np.where(sky_map > brightness_threshold)
+        for y_idx, x_idx in zip(y_indices, x_indices):
+            x_arcsec = float(x_axis[x_idx])
+            y_arcsec = float(y_axis[y_idx])
+            brightness = float(sky_map[y_idx, x_idx])
+            self.sources.append((x_arcsec, y_arcsec, brightness))
+
+    def set_stars(self, stars: Iterable[tuple[float, float, float]]) -> None:
+        """Set the sky sources as a list of continuous point sources.
+
+        Each star is a tuple: (x_offset_arcsec, y_offset_arcsec, brightness)
+        """
+        self.sources = [(float(x), float(y), float(b)) for x, y, b in stars]
+
+    def get_detector_image(
+        self,
+        x_pointing_arcsec: float,
+        y_pointing_arcsec: float,
+        common_aberrations: Sequence[float] | dict[int, float] | None = None,
+    ) -> np.ndarray:
+        """Calculate the detector image based on telescope pointing and the sky map.
+
+        This sums the incoherent contributions of all active point sources that fall within
+        the telescope's field of view.
+        """
+        # Filter sources within the telescope's FOV centered at the pointing coordinates
+        half_fov = self.detector_fov_arcsec / 2.0
+        active_sources = []
+        for x_s, y_s, brightness in self.sources:
+            dx = x_s - x_pointing_arcsec
+            dy = y_s - y_pointing_arcsec
+            if np.abs(dx) <= half_fov and np.abs(dy) <= half_fov:
+                active_sources.append((dx, dy, brightness))
+
+        # If no active light sources, return a dark image
+        if not active_sources:
+            return np.zeros(self.detector_shape)
+
+        # Initialize detector image accumulator
+        total_detector_image = np.zeros(self.detector_shape)
+
+        # Determine base aberrations (Zernike dict format)
+        if common_aberrations is None:
+            base_coeffs = {}
+        elif isinstance(common_aberrations, dict):
+            base_coeffs = dict(common_aberrations)
+        else:
+            base_coeffs = {i + 1: val for i, val in enumerate(common_aberrations)}
+
+        # Loop through active point sources and sum their incoherent intensities
+        for dx, dy, brightness in active_sources:
+            # Calculate tip/tilt for this specific star
+            pixel_scale = self.detector_fov_arcsec / self.size
+            delta_x_pixels = -dx / pixel_scale
+            delta_y_pixels = -dy / pixel_scale
+
+            a2 = 0.5 * np.pi * self.pupil_radius * delta_x_pixels
+            a3 = 0.5 * np.pi * self.pupil_radius * delta_y_pixels
+
+            # Add to base aberrations
+            coeffs = dict(base_coeffs)
+            coeffs[2] = coeffs.get(2, 0.0) + a2
+            coeffs[3] = coeffs.get(3, 0.0) + a3
+
+            # Run simulation for this point source
+            res = forward_simulate(
+                size=self.size,
+                zernike_coefficients=coeffs,
+                secondary_obstruction_ratio=self.secondary_obstruction_ratio,
+                spider_width_ratio=self.spider_width_ratio,
+                spider_angles_deg=self.spider_angles_deg,
+                pyramid_slope=self.pyramid_slope,
+                pupil_radius=self.pupil_radius,
+                detector_shape=self.detector_shape,
+            )
+
+            total_detector_image += brightness * res["detector_image"]
+
+        return total_detector_image

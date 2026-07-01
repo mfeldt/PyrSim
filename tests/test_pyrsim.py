@@ -138,6 +138,50 @@ class PyrSimTests(unittest.TestCase):
             self.assertLess(x_rel, 96)     # Verify they don't exceed the boundaries
             self.assertLess(y_rel, 96)
 
+    def test_telescope_simulator(self):
+        # Create a simulator instance
+        sim = pyrsim.TelescopeSimulator(size=128, detector_shape=(64, 64), detector_fov_arcsec=2.0)
+        
+        # Create a 2D sky map with two stars:
+        # Star 1 at (0.0, 0.0) arcsec with brightness 1.0
+        # Star 2 at (0.2, -0.2) arcsec with brightness 0.5
+        sky_map = np.zeros((21, 21))
+        # Center of sky map is at index (10, 10) representing (0, 0) arcsec on a 4.0 arcsec wide map
+        sky_map[10, 10] = 1.0
+        # index (10 + y_offset, 10 + x_offset)
+        # Pixel scale = 4.0 / 20 = 0.2 arcsec per pixel
+        # So Star 2 is at index (10 - 1, 10 + 1) -> (9, 11) representing (0.2, -0.2)
+        sky_map[9, 11] = 0.5
+        sim.set_sky_map(sky_map, sky_fov_arcsec=4.0)
+        
+        # 1. Get detector image from set_sky_map
+        img_both_map = sim.get_detector_image(0.0, 0.0)
+        self.assertEqual(img_both_map.shape, (64, 64))
+        self.assertTrue((img_both_map >= 0.0).all())
+        
+        # 2. Set identical stars directly via set_stars
+        # Star 1 at (0.0, 0.0), Star 2 at (0.2, -0.2)
+        sim.set_stars([
+            (0.0, 0.0, 1.0),
+            (0.2, -0.2, 0.5)
+        ])
+        img_both_stars = sim.get_detector_image(0.0, 0.0)
+        
+        # Verify that set_stars yields the identical image to set_sky_map
+        np.testing.assert_allclose(img_both_stars, img_both_map, rtol=1e-5, atol=1e-8)
+        
+        # 3. Test superposition:
+        # Simulation of Star 1 only:
+        sim.set_stars([(0.0, 0.0, 1.0)])
+        img_star1 = sim.get_detector_image(0.0, 0.0)
+        
+        # Simulation of Star 2 only:
+        sim.set_stars([(0.2, -0.2, 0.5)])
+        img_star2 = sim.get_detector_image(0.0, 0.0)
+        
+        # Incoherent sum should be equal to img_both_stars
+        np.testing.assert_allclose(img_both_stars, img_star1 + img_star2, rtol=1e-5, atol=1e-8)
+
 
 if __name__ == "__main__":
     unittest.main()
