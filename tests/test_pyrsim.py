@@ -88,6 +88,56 @@ class PyrSimTests(unittest.TestCase):
         phase_128 = result_128["pyramid_phase"]
         self.assertAlmostEqual(phase_128.max(), 2.0 * phase_64.max(), places=5)
 
+    def test_custom_system_configuration(self):
+        # Grid size N = 256.
+        # Pupil diameter = 96px => pupil_radius = 48px => 48 / 128 = 0.375 in coordinates
+        # Separation = 32px gap => shift = 48 + 16 = 64px => pyramid_slope = 32/3 * pi
+        # Detector shape = 224x224
+        size = 256
+        pupil_radius = 96.0 / size
+        pyramid_slope = (32.0 / 3.0) * np.pi
+        detector_shape = (224, 224)
+        
+        result = pyrsim.forward_simulate(
+            size=size,
+            zernike_coefficients={},
+            pupil_radius=pupil_radius,
+            pyramid_slope=pyramid_slope,
+            detector_shape=detector_shape,
+        )
+        img = result["detector_image"]
+        
+        # Verify shape
+        self.assertEqual(img.shape, (224, 224))
+        
+        # Find peak positions in the four quadrants of the cropped detector image
+        # Center of 224x224 image is at x = 112, y = 112.
+        # Expected shift is 64 pixels.
+        # Expected centers: x in [48, 176], y in [48, 176].
+        half_y, half_x = 112, 112
+        
+        quadrants = {
+            "Top-Right": (img[half_y:, half_x:], half_x, half_y),
+            "Top-Left": (img[half_y:, :half_x], 0, half_y),
+            "Bottom-Left": (img[:half_y, :half_x], 0, 0),
+            "Bottom-Right": (img[:half_y, half_x:], half_x, 0),
+        }
+        
+        for name, (quad_img, offset_x, offset_y) in quadrants.items():
+            y_idx, x_idx = np.unravel_index(np.argmax(quad_img), quad_img.shape)
+            x_glob = x_idx + offset_x
+            y_glob = y_idx + offset_y
+            
+            # Distance of peaks from the center should be close to 64 pixels on each axis
+            # (allowing for knife-edge peak shifting effects, but definitely in the correct quadrant)
+            x_rel = abs(x_glob - half_x)
+            y_rel = abs(y_glob - half_y)
+            
+            self.assertGreater(x_rel, 20)  # Verify they are shifted away from center
+            self.assertGreater(y_rel, 20)
+            self.assertLess(x_rel, 96)     # Verify they don't exceed the boundaries
+            self.assertLess(y_rel, 96)
+
 
 if __name__ == "__main__":
     unittest.main()

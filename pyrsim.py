@@ -175,17 +175,37 @@ class Detector:
     """Simple detector model with optional integer binning."""
 
     binning: int = 1
+    shape: tuple[int, int] | None = None
 
     def sample(self, image: np.ndarray) -> np.ndarray:
-        """Sample an image with optional integer binning."""
-        if self.binning <= 1:
-            return image
+        """Sample an image with optional integer binning and custom shape cropping."""
+        if self.binning > 1:
+            h, w = image.shape
+            bh = h // self.binning
+            bw = w // self.binning
+            trimmed = image[: bh * self.binning, : bw * self.binning]
+            image = trimmed.reshape(bh, self.binning, bw, self.binning).mean(axis=(1, 3))
 
-        h, w = image.shape
-        bh = h // self.binning
-        bw = w // self.binning
-        trimmed = image[: bh * self.binning, : bw * self.binning]
-        return trimmed.reshape(bh, self.binning, bw, self.binning).mean(axis=(1, 3))
+        if self.shape is not None:
+            sh, sw = self.shape
+            h, w = image.shape
+            # If the simulated image is smaller than the detector, center-pad it with zeros
+            pad_y = max(0, sh - h)
+            pad_x = max(0, sw - w)
+            if pad_y > 0 or pad_x > 0:
+                image = np.pad(
+                    image,
+                    ((pad_y // 2, pad_y - pad_y // 2), (pad_x // 2, pad_x - pad_x // 2)),
+                    mode="constant",
+                )
+                h, w = image.shape
+
+            # Center crop
+            y_start = h // 2 - sh // 2
+            x_start = w // 2 - sw // 2
+            image = image[y_start : y_start + sh, x_start : x_start + sw]
+
+        return image
 
     def display(self, image: np.ndarray, cmap: str = "viridis") -> None:
         """Display an image using matplotlib (if installed)."""
@@ -214,6 +234,7 @@ def forward_simulate(
     pyramid_slope: float = 8.0 * np.pi,
     detector: Detector | None = None,
     pupil_radius: float = DEFAULT_PUPIL_RADIUS,
+    detector_shape: tuple[int, int] | None = None,
 ) -> dict[str, np.ndarray]:
     """Run a full forward simulation from phase screen to detector image."""
     phase = generate_phase_screen_zernike(
@@ -236,7 +257,7 @@ def forward_simulate(
     sensor_intensity = simulate_pyramid_sensor(complex_pupil=complex_pupil, pyramid_phase=pyramid_phase)
 
     if detector is None:
-        detector = Detector()
+        detector = Detector(shape=detector_shape)
     detector_image = detector.sample(sensor_intensity)
 
     return {
