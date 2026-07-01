@@ -287,6 +287,8 @@ class TelescopeSimulator:
         secondary_obstruction_ratio: float = 0.0,
         spider_width_ratio: float = 0.0,
         spider_angles_deg: Iterable[float] = (0.0, 90.0),
+        modulation_amplitude_arcsec: float = 0.0,
+        modulation_steps: int = 16,
     ) -> None:
         self.size = size
         # Default pupil_radius is calibrated for the 96px pupil diameter
@@ -297,6 +299,8 @@ class TelescopeSimulator:
         self.secondary_obstruction_ratio = secondary_obstruction_ratio
         self.spider_width_ratio = spider_width_ratio
         self.spider_angles_deg = spider_angles_deg
+        self.modulation_amplitude_arcsec = modulation_amplitude_arcsec
+        self.modulation_steps = modulation_steps
 
         # State variable: list of point sources as (x_arcsec, y_arcsec, brightness)
         self.sources: list[tuple[float, float, float]] = []
@@ -333,22 +337,18 @@ class TelescopeSimulator:
         """Calculate the detector image based on telescope pointing and the sky map.
 
         This sums the incoherent contributions of all active point sources that fall within
-        the telescope's field of view.
+        the telescope's field of view, incorporating modulation if configured.
         """
-        # Filter sources within the telescope's FOV centered at the pointing coordinates
-        half_fov = self.detector_fov_arcsec / 2.0
-        active_sources = []
-        for x_s, y_s, brightness in self.sources:
-            dx = x_s - x_pointing_arcsec
-            dy = y_s - y_pointing_arcsec
-            if np.abs(dx) <= half_fov and np.abs(dy) <= half_fov:
-                active_sources.append((dx, dy, brightness))
+        # Determine modulation offsets. If modulation amplitude is 0, we just do one step at (0, 0)
+        if self.modulation_amplitude_arcsec > 0.0 and self.modulation_steps > 0:
+            angles = np.linspace(0, 2.0 * np.pi, self.modulation_steps, endpoint=False)
+            offsets = [
+                (self.modulation_amplitude_arcsec * np.cos(theta), self.modulation_amplitude_arcsec * np.sin(theta))
+                for theta in angles
+            ]
+        else:
+            offsets = [(0.0, 0.0)]
 
-        # If no active light sources, return a dark image
-        if not active_sources:
-            return np.zeros(self.detector_shape)
-
-        # Initialize detector image accumulator
         total_detector_image = np.zeros(self.detector_shape)
 
         # Determine base aberrations (Zernike dict format)
@@ -359,33 +359,51 @@ class TelescopeSimulator:
         else:
             base_coeffs = {i + 1: val for i, val in enumerate(common_aberrations)}
 
-        # Loop through active point sources and sum their incoherent intensities
-        for dx, dy, brightness in active_sources:
-            # Calculate tip/tilt for this specific star
-            pixel_scale = self.detector_fov_arcsec / self.size
-            delta_x_pixels = -dx / pixel_scale
-            delta_y_pixels = -dy / pixel_scale
+        # Loop over the modulation path offsets
+        for mod_dx, mod_dy in offsets:
+            curr_x_pointing = x_pointing_arcsec + mod_dx
+            curr_y_pointing = y_pointing_arcsec + mod_dy
 
-            a2 = 0.5 * np.pi * self.pupil_radius * delta_x_pixels
-            a3 = 0.5 * np.pi * self.pupil_radius * delta_y_pixels
+            # Filter sources within the telescope's FOV centered at the current modulated pointing coordinates
+            half_fov = self.detector_fov_arcsec / 2.0
+            active_sources = []
+            for x_s, y_s, brightness in self.sources:
+                dx = x_s - curr_x_pointing
+                dy = y_s - curr_y_pointing
+                if np.abs(dx) <= half_fov and np.abs(dy) <= half_fov:
+                    active_sources.append((dx, dy, brightness))
 
-            # Add to base aberrations
-            coeffs = dict(base_coeffs)
-            coeffs[2] = coeffs.get(2, 0.0) + a2
-            coeffs[3] = coeffs.get(3, 0.0) + a3
+            if not active_sources:
+                continue
 
-            # Run simulation for this point source
-            res = forward_simulate(
-                size=self.size,
-                zernike_coefficients=coeffs,
-                secondary_obstruction_ratio=self.secondary_obstruction_ratio,
-                spider_width_ratio=self.spider_width_ratio,
-                spider_angles_deg=self.spider_angles_deg,
-                pyramid_slope=self.pyramid_slope,
-                pupil_radius=self.pupil_radius,
-                detector_shape=self.detector_shape,
-            )
+            # Loop through active point sources and sum their incoherent intensities
+            for dx, dy, brightness in active_sources:
+                # Calculate tip/tilt for this specific star
+                pixel_scale = self.detector_fov_arcsec / self.size
+                delta_x_pixels = -dx / pixel_scale
+                delta_y_pixels = -dy / pixel_scale
 
-            total_detector_image += brightness * res["detector_image"]
+                a2 = 0.5 * np.pi * self.pupil_radius * delta_x_pixels
+                a3 = 0.5 * np.pi * self.pupil_radius * delta_y_pixels
 
-        return total_detector_image
+                # Add to base aberrations
+                coeffs = dict(base_coeffs)
+                coeffs[2] = coeffs.get(2, 0.0) + a2
+                coeffs[3] = coeffs.get(3, 0.0) + a3
+
+                # Run simulation for this point source
+                res = forward_simulate(
+                    size=self.size,
+                    zernike_coefficients=coeffs,
+                    secondary_obstruction_ratio=self.secondary_obstruction_ratio,
+                    spider_width_ratio=self.spider_width_ratio,
+                    spider_angles_deg=self.spider_angles_deg,
+                    pyramid_slope=self.pyramid_slope,
+                    pupil_radius=self.pupil_radius,
+                    detector_shape=self.detector_shape,
+                )
+
+                total_detector_image += brightness * res["detector_image"]
+
+        # Average the integrated image over the number of modulation steps
+        return total_detector_image / len(offsets)

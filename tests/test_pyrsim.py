@@ -182,6 +182,36 @@ class PyrSimTests(unittest.TestCase):
         # Incoherent sum should be equal to img_both_stars
         np.testing.assert_allclose(img_both_stars, img_star1 + img_star2, rtol=1e-5, atol=1e-8)
 
+    def test_telescope_modulation(self):
+        # 1. Simulator with modulation
+        sim_mod = pyrsim.TelescopeSimulator(
+            size=128,
+            detector_shape=(64, 64),
+            detector_fov_arcsec=2.0,
+            modulation_amplitude_arcsec=0.2,
+            modulation_steps=4
+        )
+        sim_mod.set_stars([(0.0, 0.0, 1.0)])
+        img_mod = sim_mod.get_detector_image(0.0, 0.0)
+        
+        # 2. Simulator without modulation
+        sim_nomod = pyrsim.TelescopeSimulator(
+            size=128,
+            detector_shape=(64, 64),
+            detector_fov_arcsec=2.0,
+            modulation_amplitude_arcsec=0.0
+        )
+        sim_nomod.set_stars([(0.0, 0.0, 1.0)])
+        
+        # Manually average 4 modulation pointings
+        p1 = sim_nomod.get_detector_image(0.2, 0.0)
+        p2 = sim_nomod.get_detector_image(0.0, 0.2)
+        p3 = sim_nomod.get_detector_image(-0.2, 0.0)
+        p4 = sim_nomod.get_detector_image(0.0, -0.2)
+        img_expected = (p1 + p2 + p3 + p4) / 4.0
+        
+        np.testing.assert_allclose(img_mod, img_expected, rtol=1e-5, atol=1e-8)
+
 
 if __name__ == "__main__":
     unittest.main()
