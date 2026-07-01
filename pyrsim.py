@@ -34,30 +34,25 @@ def _noll_to_nm(index: int) -> tuple[int, int]:
     if index < 1:
         raise ValueError("Noll indices start at 1")
 
-    # Hardcoded mapping for Noll indices 1 through 11
-    noll_mapping = {
-        1: (0, 0),    # Piston
-        2: (1, 1),    # Tip (X-tilt)
-        3: (1, -1),   # Tilt (Y-tilt)
-        4: (2, 0),    # Defocus
-        5: (2, -2),   # Primary Astigmatism (oblique)
-        6: (2, 2),    # Primary Astigmatism (vertical)
-        7: (3, -1),   # Primary Coma (vertical)
-        8: (3, 1),    # Primary Coma (horizontal)
-        9: (3, -3),   # Trefoil (oblique)
-        10: (3, 3),   # Trefoil (horizontal)
-        11: (4, 0),   # Spherical aberration
-    }
-    if index in noll_mapping:
-        return noll_mapping[index]
-
-    # Fallback to standard Noll mapping formula
     n = 0
     while index > (n + 1) * (n + 2) // 2:
         n += 1
-    j0 = index - n * (n + 1) // 2 - 1
-    m_values = list(range(-n, n + 1, 2))
-    return n, m_values[j0]
+
+    start_j = n * (n + 1) // 2 + 1
+    offset = index - start_j
+
+    if n == 0:
+        return 0, 0
+
+    if n % 2 == 0:
+        if offset == 0:
+            return n, 0
+        abs_m = 2 * ((offset - 1) // 2 + 1)
+    else:
+        abs_m = 2 * (offset // 2) + 1
+
+    m = abs_m if index % 2 == 0 else -abs_m
+    return n, m
 
 
 def _zernike_radial(n: int, m: int, rho: np.ndarray) -> np.ndarray:
@@ -99,7 +94,20 @@ def generate_phase_screen_zernike(
     coefficients: Sequence[float] | dict[int, float],
     pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> np.ndarray:
-    """Generate a phase screen from Zernike coefficients (in radians)."""
+    """Generate a phase screen from Zernike coefficients (in radians).
+
+    Parameters
+    ----------
+    size:
+        Number of pixels on each axis of the square phase screen.
+    coefficients:
+        Either a sequence where element i corresponds to Noll index i+1,
+        or a dictionary mapping 1-based Noll indices to amplitudes.
+    pupil_radius:
+        Radius of the simulated pupil in normalized grid coordinates. The
+        default leaves enough margin in the array to separate the four pupils
+        formed by the pyramid sensor.
+    """
     if not (0.0 < pupil_radius <= 1.0):
         raise ValueError("pupil_radius must be in the interval (0, 1]")
 
@@ -129,7 +137,13 @@ def generate_telescope_aperture(
     spider_angles_deg: Iterable[float] = (0.0, 90.0),
     pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> np.ndarray:
-    """Generate a binary aperture with optional central obscuration and spiders."""
+    """Generate a binary aperture with optional central obscuration and spiders.
+
+    Ratios are relative to the telescope pupil diameter. The pupil radius is
+    expressed in normalized grid coordinates, where 1.0 would touch the array
+    edges and the default keeps the pupil compact enough to form four
+    separated pupils after the pyramid sensor.
+    """
     if not (0.0 <= secondary_obstruction_ratio < 1.0):
         raise ValueError("secondary_obstruction_ratio must be in [0, 1)")
     if spider_width_ratio < 0.0:
@@ -146,11 +160,11 @@ def generate_telescope_aperture(
         aperture &= rho >= secondary_obstruction_ratio
 
     if spider_width_ratio > 0.0:
-        half_width = spider_width_ratio * pupil_radius
+        half_width_coord = spider_width_ratio * pupil_radius
         for angle_deg in spider_angles_deg:
             angle = np.deg2rad(float(angle_deg))
-            distance = np.abs(-np.sin(angle) * x + np.cos(angle) * y)
-            aperture &= distance >= half_width
+            distance_coord = np.abs(-np.sin(angle) * x + np.cos(angle) * y)
+            aperture &= distance_coord >= half_width_coord
 
     return aperture.astype(float)
 
@@ -172,20 +186,13 @@ def simulate_pyramid_sensor(complex_pupil: np.ndarray, pyramid_phase: np.ndarray
 
 @dataclass
 class Detector:
-    """Simple detector model with optional integer binning."""
+    """Simple detector model with optional integer binning and custom shapes."""
 
     binning: int = 1
-    shape: tuple[int, int] | None = None
+    shape: tuple[int, int] | None = None  # (height, width)
 
     def sample(self, image: np.ndarray) -> np.ndarray:
         """Sample an image with optional integer binning and custom shape cropping."""
-        if self.binning > 1:
-            h, w = image.shape
-            bh = h // self.binning
-            bw = w // self.binning
-            trimmed = image[: bh * self.binning, : bw * self.binning]
-            image = trimmed.reshape(bh, self.binning, bw, self.binning).mean(axis=(1, 3))
-
         if self.shape is not None:
             sh, sw = self.shape
             h, w = image.shape
@@ -205,7 +212,14 @@ class Detector:
             x_start = w // 2 - sw // 2
             image = image[y_start : y_start + sh, x_start : x_start + sw]
 
-        return image
+        if self.binning <= 1:
+            return image
+
+        h, w = image.shape
+        bh = h // self.binning
+        bw = w // self.binning
+        trimmed = image[: bh * self.binning, : bw * self.binning]
+        return trimmed.reshape(bh, self.binning, bw, self.binning).mean(axis=(1, 3))
 
     def display(self, image: np.ndarray, cmap: str = "viridis") -> None:
         """Display an image using matplotlib (if installed)."""
@@ -339,6 +353,27 @@ class TelescopeSimulator:
         This sums the incoherent contributions of all active point sources that fall within
         the telescope's field of view, incorporating modulation if configured.
         """
+        if not self.sources:
+            return np.zeros(self.detector_shape)
+
+        # Convert sources to a numpy array for fast vectorized filtering
+        src_arr = np.array(self.sources)
+        xs = src_arr[:, 0]
+        ys = src_arr[:, 1]
+        brightnesses = src_arr[:, 2]
+
+        # Pre-filter candidates that can potentially enter the detector FOV during any modulation step
+        max_mod = self.modulation_amplitude_arcsec
+        half_fov_limit = self.detector_fov_arcsec / 2.0 + max_mod
+        in_range = (np.abs(xs - x_pointing_arcsec) <= half_fov_limit) & (np.abs(ys - y_pointing_arcsec) <= half_fov_limit)
+
+        active_xs = xs[in_range]
+        active_ys = ys[in_range]
+        active_brightnesses = brightnesses[in_range]
+
+        if len(active_brightnesses) == 0:
+            return np.zeros(self.detector_shape)
+
         # Determine modulation offsets. If modulation amplitude is 0, we just do one step at (0, 0)
         if self.modulation_amplitude_arcsec > 0.0 and self.modulation_steps > 0:
             angles = np.linspace(0, 2.0 * np.pi, self.modulation_steps, endpoint=False)
@@ -364,20 +399,19 @@ class TelescopeSimulator:
             curr_x_pointing = x_pointing_arcsec + mod_dx
             curr_y_pointing = y_pointing_arcsec + mod_dy
 
-            # Filter sources within the telescope's FOV centered at the current modulated pointing coordinates
+            # Filter candidates for the current pointing
             half_fov = self.detector_fov_arcsec / 2.0
-            active_sources = []
-            for x_s, y_s, brightness in self.sources:
-                dx = x_s - curr_x_pointing
-                dy = y_s - curr_y_pointing
-                if np.abs(dx) <= half_fov and np.abs(dy) <= half_fov:
-                    active_sources.append((dx, dy, brightness))
+            in_fov = (np.abs(active_xs - curr_x_pointing) <= half_fov) & (np.abs(active_ys - curr_y_pointing) <= half_fov)
 
-            if not active_sources:
-                continue
+            step_xs = active_xs[in_fov]
+            step_ys = active_ys[in_fov]
+            step_brightnesses = active_brightnesses[in_fov]
 
             # Loop through active point sources and sum their incoherent intensities
-            for dx, dy, brightness in active_sources:
+            for x_s, y_s, brightness in zip(step_xs, step_ys, step_brightnesses):
+                dx = x_s - curr_x_pointing
+                dy = y_s - curr_y_pointing
+
                 # Calculate tip/tilt for this specific star
                 pixel_scale = self.detector_fov_arcsec / self.size
                 delta_x_pixels = -dx / pixel_scale
@@ -407,3 +441,4 @@ class TelescopeSimulator:
 
         # Average the integrated image over the number of modulation steps
         return total_detector_image / len(offsets)
+
