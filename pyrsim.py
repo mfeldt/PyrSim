@@ -34,6 +34,24 @@ def _noll_to_nm(index: int) -> tuple[int, int]:
     if index < 1:
         raise ValueError("Noll indices start at 1")
 
+    # Hardcoded mapping for Noll indices 1 through 11
+    noll_mapping = {
+        1: (0, 0),    # Piston
+        2: (1, 1),    # Tip (X-tilt)
+        3: (1, -1),   # Tilt (Y-tilt)
+        4: (2, 0),    # Defocus
+        5: (2, -2),   # Primary Astigmatism (oblique)
+        6: (2, 2),    # Primary Astigmatism (vertical)
+        7: (3, -1),   # Primary Coma (vertical)
+        8: (3, 1),    # Primary Coma (horizontal)
+        9: (3, -3),   # Trefoil (oblique)
+        10: (3, 3),   # Trefoil (horizontal)
+        11: (4, 0),   # Spherical aberration
+    }
+    if index in noll_mapping:
+        return noll_mapping[index]
+
+    # Fallback to standard Noll mapping formula
     n = 0
     while index > (n + 1) * (n + 2) // 2:
         n += 1
@@ -81,20 +99,7 @@ def generate_phase_screen_zernike(
     coefficients: Sequence[float] | dict[int, float],
     pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> np.ndarray:
-    """Generate a phase screen from Zernike coefficients (in radians).
-
-    Parameters
-    ----------
-    size:
-        Number of pixels on each axis of the square phase screen.
-    coefficients:
-        Either a sequence where element i corresponds to Noll index i+1,
-        or a dictionary mapping 1-based Noll indices to amplitudes.
-    pupil_radius:
-        Radius of the simulated pupil in normalized grid coordinates. The
-        default leaves enough margin in the array to separate the four pupils
-        formed by the pyramid sensor.
-    """
+    """Generate a phase screen from Zernike coefficients (in radians)."""
     if not (0.0 < pupil_radius <= 1.0):
         raise ValueError("pupil_radius must be in the interval (0, 1]")
 
@@ -124,13 +129,7 @@ def generate_telescope_aperture(
     spider_angles_deg: Iterable[float] = (0.0, 90.0),
     pupil_radius: float = DEFAULT_PUPIL_RADIUS,
 ) -> np.ndarray:
-    """Generate a binary aperture with optional central obscuration and spiders.
-
-    Ratios are relative to the telescope pupil diameter. The pupil radius is
-    expressed in normalized grid coordinates, where 1.0 would touch the array
-    edges and the default keeps the pupil compact enough to form four
-    separated pupils after the pyramid sensor.
-    """
+    """Generate a binary aperture with optional central obscuration and spiders."""
     if not (0.0 <= secondary_obstruction_ratio < 1.0):
         raise ValueError("secondary_obstruction_ratio must be in [0, 1)")
     if spider_width_ratio < 0.0:
@@ -147,10 +146,10 @@ def generate_telescope_aperture(
         aperture &= rho >= secondary_obstruction_ratio
 
     if spider_width_ratio > 0.0:
-        half_width = spider_width_ratio / pupil_radius
+        half_width = spider_width_ratio * pupil_radius
         for angle_deg in spider_angles_deg:
             angle = np.deg2rad(float(angle_deg))
-            distance = np.abs(-np.sin(angle) * x + np.cos(angle) * y) / pupil_radius
+            distance = np.abs(-np.sin(angle) * x + np.cos(angle) * y)
             aperture &= distance >= half_width
 
     return aperture.astype(float)
@@ -201,7 +200,9 @@ class Detector:
 
     def save(self, image: np.ndarray, path: str | Path) -> None:
         """Save image data to disk as NumPy .npy format."""
-        np.save(Path(path), image)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(path, image)
 
 
 def forward_simulate(
@@ -228,7 +229,10 @@ def forward_simulate(
         pupil_radius=pupil_radius,
     )
     complex_pupil = aperture * np.exp(1j * phase)
-    pyramid_phase = generate_pyramid_phase_screen(size=size, slope=pyramid_slope)
+    # Scale the pyramid slope to keep the pupil separation scale-invariant.
+    # The default slope (8 * pi) is calibrated for size=64 and pupil_radius=0.25.
+    scaled_slope = pyramid_slope * (size / 64.0) * (pupil_radius / 0.25)
+    pyramid_phase = generate_pyramid_phase_screen(size=size, slope=scaled_slope)
     sensor_intensity = simulate_pyramid_sensor(complex_pupil=complex_pupil, pyramid_phase=pyramid_phase)
 
     if detector is None:
