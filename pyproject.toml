@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrsim"
+version = "0.1.0"
+description = "Simple, student-friendly pyramid WFS simulation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "matplotlib>=3.3.0",
+]
+
+[tool.setuptools]
+packages = ["pyrsim"]

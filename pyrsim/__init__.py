@@ -441,4 +441,3 @@ class TelescopeSimulator:
 
         # Average the integrated image over the number of modulation steps
         return total_detector_image / len(offsets)
-
